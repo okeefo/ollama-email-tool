@@ -1,0 +1,15 @@
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    # Set the user to match your host UID/GID for permission-safe writes
+    user: "${UID}:${GID}"
+    volumes:
+      # We map the host path to the EXACT path specified in the environment variable
+      - /srv/storage/docker/ollama/models:/app/models
+    environment:
+      # Tell Ollama where to store its models (we use a non-default path inside the container)
+      - OLLAMA_MODELS=/app/models
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
