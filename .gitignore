@@ -4,3 +4,5 @@ __pycache__/
 *.eml
 *.csv
 raw_emails_older_than_90d/
+downloader-go/email-downloader
+downloader-go/email-downloader
