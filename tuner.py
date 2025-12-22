@@ -63,8 +63,9 @@ def classify_email(sender, subject, snippet):
     - a recruiter or job alert email
     - a recruiter and i have haven't replied or shown interest in the last 3 months  
     
-    
     FLAG AS FALSE (KEEP) if it is:
+    - Any individual order status update (e.g., "Order Shipped", "Order Received", "Part of your order is on its way", "Payment Confirmation").
+    - IMPORTANT: KEEP these even if they are from retail brands (e.g., Adidas, Hollister, Amazon).
     - IMPORTANT: If an email is a RECORD of money spent or an individual financial transaction, always KEEP it, even if it is automated.
     - Financial transactions, bank statements, or pension updates
     - A personal/direct human-to-human conversation
@@ -111,7 +112,7 @@ def classify_email(sender, subject, snippet):
     except Exception as e:
         return False, f"LLM Error: {str(e)}"
 
-def run_tuning_session(storage_dir: str = None):
+def run_tuning_session(storage_dir: str = None, count: int = 50):
     storage_dir = storage_dir or STORAGE_DIR
 
     # Ensure results directory exists
@@ -121,7 +122,8 @@ def run_tuning_session(storage_dir: str = None):
     ts = time.strftime('%Y%m%d-%H%M%S')
     results_path = os.path.join(RESULTS_DIR, f'tuning_{ts}.csv')
 
-    files = get_latest_emails(storage_dir, count=50)  # Start with 50 for speed
+    # Select the newest N emails based on sequence ID
+    files = get_latest_emails(storage_dir, count=count)
     print(f"\n--- Tuning Session: Reviewing {len(files)} Newest Emails ---")
 
     total_start_time = time.time()
