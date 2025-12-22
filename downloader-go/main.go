@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,16 +47,47 @@ func main() {
 	if err != nil {
 		log.Fatalf("search failed: %v", err)
 	}
-	ids := searchData.AllSeqNums()
-	total = uint64(len(ids))
+	allIds := searchData.AllSeqNums()
+
+	// Resume logic: skip IDs that already exist on disk
+	fmt.Println("Checking local storage for existing files...")
+	existingEntries, err := os.ReadDir(storageDir)
+	if err != nil {
+		log.Fatalf("failed to read storage directory %q: %v", storageDir, err)
+	}
+	existingMap := make(map[uint32]bool)
+	for _, entry := range existingEntries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".eml") {
+			idStr := strings.TrimSuffix(entry.Name(), ".eml")
+			if idVal, err := strconv.ParseUint(idStr, 10, 32); err == nil {
+				existingMap[uint32(idVal)] = true
+			}
+		}
+	}
+
+	var missingIds []uint32
+	for _, id := range allIds {
+		if !existingMap[id] {
+			missingIds = append(missingIds, id)
+		}
+	}
+
+	total = uint64(len(allIds))
+	completedCount = uint64(len(existingMap))
 	if err := c.Logout().Wait(); err != nil {
 		log.Printf("logout error: %v", err)
 	}
 
-	fmt.Printf("Found %d emails. Starting worker pool...\n", len(ids))
+	if len(missingIds) == 0 {
+		fmt.Println("All emails already downloaded. Nothing to do.")
+		return
+	}
+
+	fmt.Printf("Found %d total, %d already on disk. Resuming download for %d missing emails...\n",
+		total, len(existingMap), len(missingIds))
 
 	// 2. Setup Worker Pool
-	idChan := make(chan uint32, len(ids))
+	idChan := make(chan uint32, len(missingIds))
 	var wg sync.WaitGroup
 	numWorkers := 15 // Increased worker count per request
 
@@ -63,8 +96,8 @@ func main() {
 		go worker(w, idChan, user, pass, storageDir, &wg)
 	}
 
-	// 3. Feed the IDs into the channel
-	for _, id := range ids {
+	// 3. Feed only missing IDs into the channel
+	for _, id := range missingIds {
 		idChan <- id
 	}
 	close(idChan) // Workers will stop when channel is empty
