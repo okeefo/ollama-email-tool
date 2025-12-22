@@ -121,7 +121,7 @@ def run_tuning_session(storage_dir: str = None):
     ts = time.strftime('%Y%m%d-%H%M%S')
     results_path = os.path.join(RESULTS_DIR, f'tuning_{ts}.csv')
 
-    files = get_latest_emails(storage_dir, count=30)  # Start with 30 for speed
+    files = get_latest_emails(storage_dir, count=50)  # Start with 50 for speed
     print(f"\n--- Tuning Session: Reviewing {len(files)} Newest Emails ---")
 
     total_start_time = time.time()

@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import utils
 import downloader
 import tuner
+import processor
 
 load_dotenv()
 
@@ -14,6 +15,7 @@ def main_menu():
         print("="*30)
         print("1. Fetch all emails (> 3 months old)")
         print("2. Run Tuning/Review Session (Latest 50)")
+        print("3. Process Tuning Results (move to staging)")
         print("E. Exit")
         
         choice = input("\nSelect Option: ").strip().upper()
@@ -36,6 +38,11 @@ def main_menu():
         elif choice == '2':
             storage_dir = "/srv/storage/docker/email_data/raw_emails"
             tuner.run_tuning_session(storage_dir)
+        
+        elif choice == '3':
+            storage_dir = "/srv/storage/docker/email_data/raw_emails"
+            # results_dir and staging_dir default via env; pass only storage_dir here
+            processor.run_processor(storage_dir=storage_dir)
             
         elif choice == 'E':
             print("Goodbye Keith!")
