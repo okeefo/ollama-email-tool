@@ -63,16 +63,20 @@ def classify_email(sender, subject, snippet):
     - a recruiter or job alert email
     - a recruiter and i have haven't replied or shown interest in the last 3 months  
     
+    
     FLAG AS FALSE (KEEP) if it is:
+    - IMPORTANT: If an email is a RECORD of money spent or an individual financial transaction, always KEEP it, even if it is automated.
+    - Financial transactions, bank statements, or pension updates
     - A personal/direct human-to-human conversation
-    - A formal receipt or order confirmation
+    - A formal receipt, invoice, or order confirmation (e.g., Amazon orders, MiPermit parking, train tickets, SaaS subscriptions)
     - Critical account security or legal alerts
     - Important updates from services I actively use
-    - medical related emails from my doctor, hospital, or health insurance provider
+    - Medical related emails from my doctor, hospital, or health insurance provider
     - if its from family, friends, or colleagues
     - if its from myself (my own email address or variants of it. keithpyle@gmail okeefo@gmail.com, xxkeefxx@gmail.com and okeefo@live.co.uk)
-    - it it from HMRC regarding tax, returns or self assessment
+    - HMRC correspondence regarding tax or self-assessment
     - if its form my pension provider or financial institution regarding my accounts or statements
+    
 
     EMAIL DATA:
     From: {sender}
