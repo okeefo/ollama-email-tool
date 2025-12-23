@@ -11,6 +11,7 @@ from email import policy
 STORAGE_DIR = os.environ.get('EMAIL_STORAGE_DIR', '/srv/storage/docker/email_data/raw_emails')
 RESULTS_DIR = os.environ.get('TUNING_RESULTS_DIR', './tuning_results')
 STAGING_DIR = os.environ.get('STAGING_TO_DELETE_DIR', '/srv/storage/docker/email_data/staging/to_delete')
+STAGING_KEEP_DIR = os.environ.get('STAGING_KEEP_DIR', '/srv/storage/docker/email_data/staging/to_keep')
 
 
 def _list_tuning_csvs(results_dir: str) -> List[str]:
@@ -40,66 +41,59 @@ def _trim(text: str, max_len: int = 60) -> str:
     return s if len(s) <= max_len else s[: max_len - 1] + '…'
 
 
-def _process_csv(csv_path: str, raw_dir: str, staging_dir: str) -> dict:
-    moved = 0
-    already = 0
-    missing = 0
-    errors = 0
+def _process_csv(csv_path: str, raw_dir: str, delete_dir: str, keep_dir: str) -> dict:
+    stats = {"moved_delete": 0, "moved_keep": 0, "already": 0, "missing": 0, "errors": 0}
 
     with open(csv_path, 'r', encoding='utf-8', newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            status = (row.get('status') or '').strip()
-            if status != '[DELETE]':
+            status = (row.get('status') or '').strip()  # '[DELETE]' or '[ KEEP ]' or others
+            seq_id = str(row.get('seq_id') or '').strip()
+            subject = (row.get('subject') or '')
+
+            filename = f"{seq_id}.eml"
+            src = os.path.join(raw_dir, filename)
+
+            # Destination based on AI status
+            if status == '[DELETE]':
+                dst = os.path.join(delete_dir, filename)
+                target_label = 'DELETE'
+            elif status == '[ KEEP ]':
+                dst = os.path.join(keep_dir, filename)
+                target_label = 'KEEP'
+            else:
+                # Unknown or summary rows: skip silently
                 continue
 
-            seq_id = str(row.get('seq_id') or '').strip()
-            subject = row.get('subject') or ''
-            reason = row.get('reason') or ''
-
-            # Determine file names/paths
-            filename = f"{seq_id}.eml" if seq_id.isdigit() else None
-            src = os.path.join(raw_dir, filename) if filename else None
-            dst = os.path.join(staging_dir, filename) if filename else None
-
-            # Resolve status line fields
-            date_str = '(missing)'
-
             try:
-                if not filename:
-                    missing += 1
-                    print(f"MISSING | id={seq_id:<6} | date={date_str:<25} | subj={_trim(subject)} | reason={_trim(reason, 80)}")
+                # 1. Already in either staging?
+                if os.path.exists(os.path.join(delete_dir, filename)) or os.path.exists(os.path.join(keep_dir, filename)):
+                    stats["already"] += 1
                     continue
 
-                # If already staged
-                if os.path.exists(dst):
-                    date_str = _read_email_date(dst)
-                    already += 1
-                    print(f"SKIP   | id={seq_id:<6} | date={date_str:<25} | subj={_trim(subject)} | reason={_trim(reason, 80)}")
-                    continue
-
-                # If in raw, move it
+                # 2. If in raw, move it to appropriate staging
                 if os.path.exists(src):
-                    # Read date before moving for consistent reporting
-                    date_str = _read_email_date(src)
-                    os.makedirs(staging_dir, exist_ok=True)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
                     shutil.move(src, dst)
-                    moved += 1
-                    print(f"MOVED  | id={seq_id:<6} | date={date_str:<25} | subj={_trim(subject)} | reason={_trim(reason, 80)}")
+                    if status == '[DELETE]':
+                        stats["moved_delete"] += 1
+                    else:
+                        stats["moved_keep"] += 1
+                    print(f"MOVED {target_label} | id={seq_id:<6} | {_trim(subject, 50)}")
                 else:
-                    missing += 1
-                    print(f"MISSING | id={seq_id:<6} | date={date_str:<25} | subj={_trim(subject)} | reason={_trim(reason, 80)}")
+                    stats["missing"] += 1
             except Exception as e:
-                errors += 1
-                print(f"ERROR  | id={seq_id:<6} | {e}")
+                stats["errors"] += 1
+                print(f"ERROR | id={seq_id} | {e}")
 
-    return {"moved": moved, "already": already, "missing": missing, "errors": errors}
+    return stats
 
 
 def run_processor(storage_dir: str = None, results_dir: str = None, staging_dir: str = None):
     raw_dir = storage_dir or STORAGE_DIR
     res_dir = results_dir or RESULTS_DIR
-    stage_dir = staging_dir or STAGING_DIR
+    stage_del_dir = staging_dir or STAGING_DIR
+    stage_keep_dir = STAGING_KEEP_DIR
 
     csvs = _list_tuning_csvs(res_dir)
     if not csvs:
@@ -138,22 +132,23 @@ def run_processor(storage_dir: str = None, results_dir: str = None, staging_dir:
         return
 
     print(f"\nProcessing {len(selected)} CSV file(s)…")
-    grand = {"moved": 0, "already": 0, "missing": 0, "errors": 0}
+    grand = {"moved_delete": 0, "moved_keep": 0, "already": 0, "missing": 0, "errors": 0}
 
     for path in selected:
         print("\n" + "-" * 80)
         print(f"Processing: {os.path.basename(path)}")
-        res = _process_csv(path, raw_dir, stage_dir)
+        res = _process_csv(path, raw_dir, stage_del_dir, stage_keep_dir)
         for k in grand:
             grand[k] += res.get(k, 0)
 
     print("\n" + "=" * 80)
     print("Summary:")
-    print(f" - Moved:   {grand['moved']}")
-    print(f" - Skipped: {grand['already']} (already staged)")
-    print(f" - Missing: {grand['missing']}")
+    print(f" - Moved to delete: {grand['moved_delete']}")
+    print(f" - Moved to keep:   {grand['moved_keep']}")
+    print(f" - Skipped:         {grand['already']} (already staged)")
+    print(f" - Missing:         {grand['missing']}")
     if grand['errors']:
-        print(f" - Errors:  {grand['errors']}")
+        print(f" - Errors:          {grand['errors']}")
     print("=" * 80)
 
 
