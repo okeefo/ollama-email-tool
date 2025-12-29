@@ -7,9 +7,13 @@ services:
     volumes:
       # We map the host path to the EXACT path specified in the environment variable
       - /srv/storage/docker/ollama/models:/app/models
+      # Mount modelfiles to create models from host
+      - ./modelfiles:/modelfiles 
     environment:
       # Tell Ollama where to store its models (we use a non-default path inside the container)
       - OLLAMA_MODELS=/app/models
+      # Keep the model resident in RAM indefinitely between requests
+      - OLLAMA_KEEP_ALIVE=-1
     ports:
       - "11434:11434"
     restart: unless-stopped

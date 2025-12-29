@@ -7,8 +7,8 @@ import requests
 import json
 
 OLLAMA_API_URL = 'http://127.0.0.1:11434/api/generate'
-#OLLAMA_MODEL = 'mistral:7b-instruct-q5_K_M'
-OLLAMA_MODEL = 'gemma2:2b' # A smaller, faster model for tuning sessions
+# Hard-pin model to custom modelfile
+OLLAMA_MODEL = 'email-triage'
 
 # Global paths
 STORAGE_DIR = os.environ.get('EMAIL_STORAGE_DIR', '/srv/storage/docker/email_data/raw_emails')
@@ -51,64 +51,36 @@ def parse_eml(filepath):
     except Exception as e:
         return "Error", "Error", str(e), "(Error)"
 
+            
 def classify_email(sender, subject, snippet):
-    """The 'Aggressive' Prompt to catch news briefings and marketing."""
-    prompt = f"""
-    Analyze this email (older than 3 months). 
-    
-    FLAG AS TRUE (DELETE) if it is:
-    - Promotional/Marketing/Sales
-    - News briefings, daily digests, or automated news updates (e.g. "Labour market weakens", "Trump sues the BBC")
-    - Generic automated notifications
-    - a recruiter or job alert email
-    - a recruiter and i have haven't replied or shown interest in the last 3 months  
-    
-    FLAG AS FALSE (KEEP) if it is:
-    - Any individual order status update (e.g., "Order Shipped", "Order Received", "Part of your order is on its way", "Payment Confirmation").
-    - IMPORTANT: KEEP these even if they are from retail brands (e.g., Adidas, Hollister, Amazon).
-    - IMPORTANT: If an email is a RECORD of money spent or an individual financial transaction, always KEEP it, even if it is automated.
-    - Financial transactions, bank statements, or pension updates
-    - A personal/direct human-to-human conversation
-    - A formal receipt, invoice, or order confirmation (e.g., Amazon orders, MiPermit parking, train tickets, SaaS subscriptions)
-    - Critical account security or legal alerts
-    - Important updates from services I actively use
-    - Medical related emails from my doctor, hospital, or health insurance provider
-    - if its from family, friends, or colleagues
-    - if its from myself (my own email address or variants of it. keithpyle@gmail okeefo@gmail.com, xxkeefxx@gmail.com and okeefo@live.co.uk)
-    - HMRC correspondence regarding tax or self-assessment
-    - if its form my pension provider or financial institution regarding my accounts or statements
-    
+    """Simplified call using the custom 'email-triage' modelfile."""
 
-    EMAIL DATA:
-    From: {sender}
-    Subject: {subject}
-    Body Snippet: {snippet}
+    prompt = f"From: {sender}\nSubject: {subject}\nBody Snippet: {snippet}"
 
-    OUTPUT ONLY VALID JSON: {{"is_promotional": true/false, "reason": "short reason"}}
-    """
-    
     try:
-        # Timeout set to 60 to allow for CPU inference time
+        #Model context window: Added num_ctx: 1024 to the Ollama options in tuner.py for tighter memory use and potential CPU cache benefits.
+
         r = requests.post(OLLAMA_API_URL, json={
             "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
             "format": "json",
             "options": {
-                "temperature": 0.0,  # Zero creativity = faster decisions
-                "num_thread": 8,     # Use all your Beelink cores
-                "num_predict": 128   # Stop immediately after giving the JSON
+                "temperature": 0.0,
+                "num_thread": 8,
+                "num_predict": 128,
+                "num_ctx": 1024 
             }
-        }, timeout=60) # 60 seconds timeout - is a bit high but LLMs can be slow sometimes
-        
+        }, timeout=60)
+
         r.raise_for_status()
         response_data = r.json()
         model_output = json.loads(response_data.get('response', '{}'))
         return model_output.get('is_promotional', False), model_output.get('reason', 'N/A')
-    
+
     except requests.exceptions.Timeout:
         return False, "LLM Timeout (Still thinking...)"
-    
+
     except Exception as e:
         return False, f"LLM Error: {str(e)}"
 
@@ -117,6 +89,10 @@ def run_tuning_session(storage_dir: str = None, count: int = 50):
 
     # Ensure results directory exists
     os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    # Hint: keep model resident for small batches
+    if not os.environ.get('OLLAMA_KEEP_ALIVE') and count <= 100:
+        print("[Tip] Set OLLAMA_KEEP_ALIVE=-1 to keep the model loaded between runs.")
 
     # Timestamped, human-sortable filename
     ts = time.strftime('%Y%m%d-%H%M%S')
