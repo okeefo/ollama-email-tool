@@ -41,8 +41,25 @@ def _trim(text: str, max_len: int = 60) -> str:
     return s if len(s) <= max_len else s[: max_len - 1] + '…'
 
 
-def _process_csv(csv_path: str, raw_dir: str, delete_dir: str, keep_dir: str) -> dict:
-    stats = {"moved_delete": 0, "moved_keep": 0, "already": 0, "missing": 0, "errors": 0}
+def _process_csv(
+    csv_path: str,
+    raw_dir: str,
+    delete_dir: str,
+    keep_dir: str,
+    mode: str = 'move',
+    apply_keep: bool = True,
+    apply_delete: bool = True,
+    dry_run: bool = False,
+) -> dict:
+    stats = {
+        "moved_delete": 0,
+        "moved_keep": 0,
+        "reverted_delete": 0,
+        "reverted_keep": 0,
+        "already": 0,
+        "missing": 0,
+        "errors": 0,
+    }
 
     with open(csv_path, 'r', encoding='utf-8', newline='') as f:
         reader = csv.DictReader(f)
@@ -51,37 +68,80 @@ def _process_csv(csv_path: str, raw_dir: str, delete_dir: str, keep_dir: str) ->
             seq_id = str(row.get('seq_id') or '').strip()
             subject = (row.get('subject') or '')
 
-            filename = f"{seq_id}.eml"
-            src = os.path.join(raw_dir, filename)
-
-            # Destination based on AI status
-            if status == '[DELETE]':
-                dst = os.path.join(delete_dir, filename)
-                target_label = 'DELETE'
-            elif status == '[ KEEP ]':
-                dst = os.path.join(keep_dir, filename)
-                target_label = 'KEEP'
-            else:
+            # Only act on requested statuses
+            if status == '[DELETE]' and not apply_delete:
+                continue
+            if status == '[ KEEP ]' and not apply_keep:
+                continue
+            if status not in ('[DELETE]', '[ KEEP ]'):
                 # Unknown or summary rows: skip silently
                 continue
 
-            try:
-                # 1. Already in either staging?
-                if os.path.exists(os.path.join(delete_dir, filename)) or os.path.exists(os.path.join(keep_dir, filename)):
-                    stats["already"] += 1
-                    continue
+            if not seq_id.isdigit():
+                stats["missing"] += 1
+                continue
 
-                # 2. If in raw, move it to appropriate staging
-                if os.path.exists(src):
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.move(src, dst)
+            filename = f"{seq_id}.eml"
+
+            try:
+                if mode == 'move':
+                    src = os.path.join(raw_dir, filename)
                     if status == '[DELETE]':
-                        stats["moved_delete"] += 1
+                        dst = os.path.join(delete_dir, filename)
+                        label = 'DELETE'
                     else:
-                        stats["moved_keep"] += 1
-                    print(f"MOVED {target_label} | id={seq_id:<6} | {_trim(subject, 50)}")
+                        dst = os.path.join(keep_dir, filename)
+                        label = 'KEEP'
+
+                    # Already in either staging?
+                    if os.path.exists(os.path.join(delete_dir, filename)) or os.path.exists(os.path.join(keep_dir, filename)):
+                        stats["already"] += 1
+                        continue
+
+                    if os.path.exists(src):
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        if dry_run:
+                            print(f"DRY-RUN MOVE {label} | id={seq_id:<6} | {_trim(subject, 50)}")
+                        else:
+                            shutil.move(src, dst)
+                            print(f"MOVED     {label} | id={seq_id:<6} | {_trim(subject, 50)}")
+                        if status == '[DELETE]':
+                            stats["moved_delete"] += 1
+                        else:
+                            stats["moved_keep"] += 1
+                    else:
+                        stats["missing"] += 1
+
+                elif mode == 'revert':
+                    if status == '[DELETE]':
+                        src = os.path.join(delete_dir, filename)
+                        label = 'DELETE'
+                    else:
+                        src = os.path.join(keep_dir, filename)
+                        label = 'KEEP'
+                    dst = os.path.join(raw_dir, filename)
+
+                    # Already back in raw?
+                    if os.path.exists(dst):
+                        stats["already"] += 1
+                        continue
+
+                    if os.path.exists(src):
+                        os.makedirs(raw_dir, exist_ok=True)
+                        if dry_run:
+                            print(f"DRY-RUN REVERT {label} | id={seq_id:<6} | {_trim(subject, 50)}")
+                        else:
+                            shutil.move(src, dst)
+                            print(f"REVERTED  {label} | id={seq_id:<6} | {_trim(subject, 50)}")
+                        if status == '[DELETE]':
+                            stats["reverted_delete"] += 1
+                        else:
+                            stats["reverted_keep"] += 1
+                    else:
+                        stats["missing"] += 1
                 else:
-                    stats["missing"] += 1
+                    # Unknown mode
+                    stats["errors"] += 1
             except Exception as e:
                 stats["errors"] += 1
                 print(f"ERROR | id={seq_id} | {e}")
@@ -131,24 +191,67 @@ def run_processor(storage_dir: str = None, results_dir: str = None, staging_dir:
         print("No files selected.")
         return
 
-    print(f"\nProcessing {len(selected)} CSV file(s)…")
-    grand = {"moved_delete": 0, "moved_keep": 0, "already": 0, "missing": 0, "errors": 0}
+    # Choose operation mode
+    print("\nOperation modes:")
+    print(" M1 - Move KEEP only")
+    print(" M2 - Move DELETE only")
+    print(" M3 - Move KEEP and DELETE (default)")
+    print(" R1 - Revert KEEP only")
+    print(" R2 - Revert DELETE only")
+    print(" R3 - Revert KEEP and DELETE")
+    op_choice = input("Select mode [M3]: ").strip().upper() or 'M3'
+
+    mode = 'move'
+    apply_keep = True
+    apply_delete = True
+    if op_choice == 'M1':
+        mode = 'move'; apply_keep = True; apply_delete = False
+    elif op_choice == 'M2':
+        mode = 'move'; apply_keep = False; apply_delete = True
+    elif op_choice == 'M3':
+        mode = 'move'; apply_keep = True; apply_delete = True
+    elif op_choice == 'R1':
+        mode = 'revert'; apply_keep = True; apply_delete = False
+    elif op_choice == 'R2':
+        mode = 'revert'; apply_keep = False; apply_delete = True
+    elif op_choice == 'R3':
+        mode = 'revert'; apply_keep = True; apply_delete = True
+    else:
+        print("Unknown selection; defaulting to Move KEEP and DELETE.")
+        mode = 'move'; apply_keep = True; apply_delete = True
+
+    dry_raw = input("Dry run? (y/N): ").strip().lower()
+    dry_run = dry_raw == 'y'
+
+    print(f"\nProcessing {len(selected)} CSV file(s)… ({'DRY-RUN' if dry_run else 'REAL'})")
+    grand = {"moved_delete": 0, "moved_keep": 0, "reverted_delete": 0, "reverted_keep": 0, "already": 0, "missing": 0, "errors": 0}
 
     for path in selected:
         print("\n" + "-" * 80)
         print(f"Processing: {os.path.basename(path)}")
-        res = _process_csv(path, raw_dir, stage_del_dir, stage_keep_dir)
+        res = _process_csv(
+            path,
+            raw_dir,
+            stage_del_dir,
+            stage_keep_dir,
+            mode=mode,
+            apply_keep=apply_keep,
+            apply_delete=apply_delete,
+            dry_run=dry_run,
+        )
         for k in grand:
             grand[k] += res.get(k, 0)
 
     print("\n" + "=" * 80)
     print("Summary:")
-    print(f" - Moved to delete: {grand['moved_delete']}")
-    print(f" - Moved to keep:   {grand['moved_keep']}")
-    print(f" - Skipped:         {grand['already']} (already staged)")
-    print(f" - Missing:         {grand['missing']}")
+    print(f" - Moved to delete:   {grand['moved_delete']}")
+    print(f" - Moved to keep:     {grand['moved_keep']}")
+    print(f" - Reverted delete:   {grand['reverted_delete']}")
+    print(f" - Reverted keep:     {grand['reverted_keep']}")
+    print(f" - Skipped (already): {grand['already']}")
+    print(f" - Missing:           {grand['missing']}")
     if grand['errors']:
-        print(f" - Errors:          {grand['errors']}")
+        print(f" - Errors:            {grand['errors']}")
     print("=" * 80)
 
 
