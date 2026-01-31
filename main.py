@@ -1,12 +1,15 @@
 import os
 from datetime import date
 from dotenv import load_dotenv
+
+load_dotenv()
 import utils
 import downloader
 import tuner_local
 import tuner_cloud
 import processor
 import tuning_runs_manager
+import model_manager
 
 load_dotenv()
 
@@ -21,6 +24,7 @@ def main_menu():
         print("3. Run Tuning/Review (Cloud, default 500)")
         print("4. Process Tuning Results (move to staging)")
         print("5. Manage Tuning Runs (list/open/delete)")
+        print("6. Model Manager (build/start)")
         print("E. Exit")
 
         choice = input("\nSelect Option: ").strip().upper()
@@ -80,6 +84,10 @@ def main_menu():
         elif choice == "5":
             # Manage previous tuning runs: list/delete/open
             tuning_runs_manager.manage_tuning_runs()
+
+        elif choice == "6":
+            # Build/list/select local Ollama models
+            model_manager.run_model_manager()
 
         elif choice == "E":
             print("Goodbye Keith!")

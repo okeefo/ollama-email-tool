@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime
 import csv
 import json
 
@@ -29,18 +30,26 @@ def process_cloud_batch(email_batch, model: str = None):
     model_name = model or os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
     client = _get_client()
 
+    # Build enhanced prompt with recency logic and current date
+    current_date = datetime.now().strftime("%B %Y")
     prompt = (
-        "AUDIT TASK: Review the following email list.\n"
-        "Identify which are PROMOTIONAL (Junk/Automated) vs IMPORTANT (Personal/Financial/Medical).\n\n"
-        "CRITICAL: Be aggressive with LinkedIn and Social Media pings. Even if they say "
-        "'Personal message', if they originate from a social platform, mark as is_promotional: true.\n\n"
+        f"AUDIT TASK: Classify these emails.\nReference Month: {current_date}.\n\n"
+        "### 🛑 DELETE (is_promotional: true)\n"
+        "- AUTOMATED ALERTS: Any property search alerts (Rightmove, Zoopla), job alerts, or market trackers. These are time-sensitive and considered STALE and junk once they are several months old.\n"
+        "- SOCIAL/NOTIFICATIONS: LinkedIn, Facebook, etc.\n"
+        "- MARKETING: Newsletters, sales, and general ads.\n\n"
+        "### 💾 KEEP (is_promotional: false)\n"
+        "- IDENTITY/PERSONAL: Human-to-human emails involving the user or family.\n"
+        "- OFFICIAL RECORDS: HMRC, Banking, Medical/Pharmacy (Juniper), or Pensions.\n"
+        "- LOGISTICS: Receipts, invoices, and historical order records.\n\n"
+        "CRITICAL LOGIC: If an email is an automated 'Search Result' or 'Alert,' it is PROMOTIONAL because it is no longer actionable data.\n\n"
         "Return ONLY a JSON array of objects:\n"
         '[{"seq_id": "123", "is_promotional": true, "reason": "string"}]\n'
     )
 
     email_texts = "\n".join(
         [
-            f"ID: {e['seq_id']} | From: {e['sender']} | Sub: {e['subject']} | Snippet: {e['snippet']}"
+            f"ID: {e['seq_id']} | Date: {e.get('date','(no date)')} | From: {e['sender']} | Sub: {e['subject']} | Snippet: {e['snippet']}"
             for e in email_batch
         ]
     )
@@ -107,7 +116,7 @@ def run_cloud_tuning_session(
         except Exception:
             seq_id = -1
         start_parse = time.time()
-        sender, subject, snippet, message_id = parse_eml(path)
+        sender, subject, snippet, message_id, email_date = parse_eml(path)
         parse_sec = time.time() - start_parse
         parsed[str(seq_id)] = {
             "seq_id": str(seq_id),
@@ -115,6 +124,7 @@ def run_cloud_tuning_session(
             "subject": subject,
             "snippet": snippet,
             "message_id": message_id,
+            "date": email_date,
             "parse_sec": parse_sec,
         }
 
@@ -142,6 +152,7 @@ def run_cloud_tuning_session(
                     "sender": parsed[pid]["sender"],
                     "subject": parsed[pid]["subject"],
                     "snippet": parsed[pid]["snippet"],
+                    "date": parsed[pid]["date"],
                 }
                 for pid in chunk_ids
             ]

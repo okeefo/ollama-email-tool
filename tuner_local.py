@@ -7,12 +7,124 @@ import json
 from tuning_common import STORAGE_DIR, RESULTS_DIR, get_latest_emails, parse_eml
 
 OLLAMA_API_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "email-triage"
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "email-triage")
+REQUEST_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "180"))
+OPTIONS = {
+    "temperature": float(os.environ.get("OLLAMA_TEMPERATURE", "0.0")),
+    "num_thread": int(os.environ.get("OLLAMA_NUM_THREAD", "8")),
+    "num_predict": int(os.environ.get("OLLAMA_NUM_PREDICT", "128")),
+    "num_ctx": int(os.environ.get("OLLAMA_NUM_CTX", "1024")),
+}
 
 
-def classify_email(sender, subject, snippet):
-    """Call local Ollama model using the custom 'email-triage' modelfile."""
-    prompt = f"From: {sender}\nSubject: {subject}\nBody Snippet: {snippet}"
+def _parse_model_json(response_text: str):
+    if not response_text:
+        return None
+    s = response_text.strip()
+    if s.startswith("{") and s.endswith("}"):
+        try:
+            return json.loads(s)
+        except Exception:
+            pass
+    start = s.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    str_ch = ""
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == str_ch:
+                in_str = False
+        else:
+            if c == '"' or c == "'":
+                in_str = True
+                str_ch = c
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    segment = s[start : i + 1]
+                    try:
+                        return json.loads(segment)
+                    except Exception:
+                        return None
+    return None
+
+
+def _retry_strict_json(prompt: str):
+    strict_prompt = (
+        prompt
+        + "\n\nReturn ONLY a single JSON object with keys: is_promotional (boolean), reason (string)."
+    )
+    try:
+        r = requests.post(
+            OLLAMA_API_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": strict_prompt,
+                "stream": False,
+                "format": "json",
+                "options": {
+                    **OPTIONS,
+                    "num_predict": min(OPTIONS.get("num_predict", 128), 64),
+                },
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        r.raise_for_status()
+        response_data = r.json()
+        parsed = _parse_model_json(response_data.get("response", ""))
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _heuristic_classify(sender: str, subject: str, snippet: str):
+    text = " ".join([sender or "", subject or "", snippet or ""]).lower()
+    promo_keywords = [
+        "unsubscribe",
+        "sale",
+        "discount",
+        "newsletter",
+        "offer",
+        "deal",
+        "promotion",
+        "shop",
+        "limited time",
+        "confirm",
+        "pick of the week",
+        "pricing",
+        "property",
+        "free",
+        "save",
+        "coupon",
+        "act now",
+    ]
+    sender_flags = ["noreply", "no-reply", "mailer", "marketing", "news"]
+    is_promo = any(k in text for k in promo_keywords) or any(
+        s in (sender or "").lower() for s in sender_flags
+    )
+    if is_promo:
+        return True, "Heuristic promotional keywords/sender"
+    return False, "Heuristic non-promotional"
+
+
+def classify_email(sender, subject, snippet, email_date=None):
+    """Call local Ollama model using the custom 'email-triage' modelfile with minimal prompt."""
+    prompt = (
+        f"Date: {email_date or '(no date)'}\n"
+        f"From: {sender}\n"
+        f"Subject: {subject}\n"
+        f"Body Snippet: {snippet}"
+    )
     try:
         r = requests.post(
             OLLAMA_API_URL,
@@ -21,21 +133,22 @@ def classify_email(sender, subject, snippet):
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
-                "options": {
-                    "temperature": 0.0,
-                    "num_thread": 8,
-                    "num_predict": 128,
-                    "num_ctx": 1024,
-                },
+                "options": OPTIONS,
             },
-            timeout=60,
+            timeout=REQUEST_TIMEOUT,
         )
         r.raise_for_status()
         response_data = r.json()
-        model_output = json.loads(response_data.get("response", "{}"))
-        return model_output.get("is_promotional", False), model_output.get(
-            "reason", "N/A"
-        )
+        parsed = _parse_model_json(response_data.get("response", ""))
+        if isinstance(parsed, dict):
+            return parsed.get("is_promotional", False), parsed.get("reason", "N/A")
+        retry_parsed = _retry_strict_json(prompt)
+        if isinstance(retry_parsed, dict):
+            return retry_parsed.get("is_promotional", False), retry_parsed.get(
+                "reason", "N/A"
+            )
+        h_is_promo, h_reason = _heuristic_classify(sender, subject, snippet)
+        return h_is_promo, h_reason
     except requests.exceptions.Timeout:
         return False, "LLM Timeout (Still thinking...)"
     except Exception as e:
@@ -54,6 +167,31 @@ def run_tuning_session(storage_dir: str = None, count: int = 50):
 
     files = get_latest_emails(storage_dir, count=count)
     print(f"\n--- Tuning Session (Local): Reviewing {len(files)} Newest Emails ---")
+    print(f"Using local model: {OLLAMA_MODEL}")
+    print(
+        f"Endpoint: {OLLAMA_API_URL} | KeepAlive={os.environ.get('OLLAMA_KEEP_ALIVE', '(unset)')}"
+    )
+    print(
+        f"Options: temperature={OPTIONS['temperature']}, num_thread={OPTIONS['num_thread']}, "
+        f"num_predict={OPTIONS['num_predict']}, num_ctx={OPTIONS['num_ctx']}"
+    )
+    # Warm up the model once to avoid first-request stall
+    try:
+        warm_start = time.time()
+        requests.post(
+            OLLAMA_API_URL,
+            json={
+                "model": OLLAMA_MODEL,
+                "prompt": "Warm-up",
+                "stream": False,
+                "format": "json",
+                "options": {**OPTIONS, "num_predict": 16},
+            },
+            timeout=min(REQUEST_TIMEOUT, 120),
+        )
+        print(f"Warm-up complete in {time.time() - warm_start:.1f}s")
+    except Exception as e:
+        print(f"Warm-up skipped ({e})")
 
     total_start_time = time.time()
     ai_total = 0.0
@@ -81,11 +219,11 @@ def run_tuning_session(storage_dir: str = None, count: int = 50):
                 seq_id = -1
 
             start_parse = time.time()
-            sender, subject, snippet, message_id = parse_eml(path)
+            sender, subject, snippet, message_id, email_date = parse_eml(path)
             parse_duration = time.time() - start_parse
 
             start_ai = time.time()
-            is_promo, reason = classify_email(sender, subject, snippet)
+            is_promo, reason = classify_email(sender, subject, snippet, email_date)
             ai_duration = time.time() - start_ai
 
             status = "[DELETE]" if is_promo else "[ KEEP ]"

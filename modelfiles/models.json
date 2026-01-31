@@ -1,0 +1,38 @@
+[
+    {
+        "name": "email-triage-llama",
+        "base": "llama3.2:3b",
+        "params": {
+            "temperature": 0.0,
+            "num_ctx": 1024,
+            "num_predict": 80
+        }
+    },
+    {
+        "name": "email-triage-r1",
+        "base": "deepseek-r1:7b",
+        "params": {
+            "temperature": 0.0,
+            "num_ctx": 1024,
+            "num_predict": 80
+        }
+    },
+    {
+        "name": "email-triage-gemma2",
+        "base": "gemma2:2b",
+        "params": {
+            "temperature": 0.0,
+            "num_ctx": 1024,
+            "num_predict": 80
+        }
+    },
+    {
+        "name": "email-triage-mistral7b",
+        "base": "mistral:7b-instruct-q5_K_M",
+        "params": {
+            "temperature": 0.0,
+            "num_ctx": 1024,
+            "num_predict": 80
+        }
+    }
+]

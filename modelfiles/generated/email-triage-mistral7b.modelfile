@@ -1,4 +1,4 @@
-FROM llama3.2:3b
+FROM mistral:7b-instruct-q5_K_M
 
 PARAMETER temperature 0.0
 PARAMETER num_ctx 1024

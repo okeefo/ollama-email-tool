@@ -17,7 +17,7 @@ def get_latest_emails(directory, count=50):
 
 
 def parse_eml(filepath):
-    """Extracts basic info from an eml file for the LLM, including Message-ID."""
+    """Extracts basic info from an eml file for the LLM, including Message-ID and Date."""
     try:
         with open(filepath, "rb") as f:
             msg = email.message_from_binary_file(f, policy=policy.default)
@@ -25,6 +25,7 @@ def parse_eml(filepath):
         sender = msg.get("from", "(Unknown)")
         subject = msg.get("subject", "(No Subject)")
         message_id = msg.get("Message-ID", "(No Message-ID)")
+        email_date = msg.get("Date", "(no date)")
 
         body = ""
         if msg.is_multipart():
@@ -40,6 +41,6 @@ def parse_eml(filepath):
                 body = payload.decode(errors="ignore")
 
         snippet = body.strip().replace("\n", " ")[:500]
-        return sender, subject, snippet, message_id
+        return sender, subject, snippet, message_id, email_date
     except Exception as e:
-        return "Error", "Error", str(e), "(Error)"
+        return "Error", "Error", str(e), "(Error)", "(no date)"
